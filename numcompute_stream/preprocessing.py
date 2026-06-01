@@ -1,36 +1,64 @@
 """
-- StandardScaler (streaming mean/var later)
-- Imputer (streaming fill values later)
-- OneHotEncoder (incremental categories later)
+- StandardScaler:
+    * partial_fit ignores NaNs in statistics
+    * transform keeps NaNs as NaNs (it does not magically fill missing values)
+    * You can use Imputer before StandardScaler in a Pipeline if you want no NaNs.
+- Imputer:
+    * strategy = "mean" only (simple, stable, common)
+    * partial_fit updates running mean using StreamingStats
+- OneHotEncoder:
+    * keeps an ordered list of categories per column
+    * partial_fit adds new categories when they appear in later chunks
+    * transform outputs a consistent number/order of columns based on learned categories
 """
 
 from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import List, Optional, Any
+
 import numpy as np
+
 from .utils import as_2d_array
+from .stats import StreamingStats
 
 
 class StandardScaler:
+    """
+    StandardScaler for streaming data.
+
+    transform(X) applies:
+        (X - mean_) / sqrt(var_ + eps)
+    """
     def __init__(self, with_mean: bool = True, with_std: bool = True, eps: float = 1e-12):
-        self.with_mean = with_mean
-        self.with_std = with_std
-        self.eps = eps
-        self.n_seen_ = 0
-        self.mean_ = None
-        self.var_ = None
+        self.with_mean = bool(with_mean)
+        self.with_std = bool(with_std)
+        self.eps = float(eps)
+
+        self._stats = StreamingStats()
+
+        # Public fitted attributes (set after partial_fit)
+        self.n_seen_: Optional[np.ndarray] = None
+        self.mean_: Optional[np.ndarray] = None
+        self.var_: Optional[np.ndarray] = None
 
     def partial_fit(self, X, y=None):
         X = as_2d_array(X, "X")
-        # Placeholder: store simple batch stats (will be replaced with true streaming update)
-        self.n_seen_ += X.shape[0]
-        self.mean_ = np.nanmean(X, axis=0)
-        self.var_ = np.nanvar(X, axis=0)
+        self._stats.update_stats(X)
+
+        self.n_seen_ = self._stats.n_seen_.copy()
+        self.mean_ = self._stats.mean_.copy()
+        self.var_ = self._stats.variance().copy()
         return self
 
     def transform(self, X):
         X = as_2d_array(X, "X")
-        if self.mean_ is None:
+        if self.mean_ is None or self.var_ is None:
             raise ValueError("StandardScaler is not fitted yet. Call partial_fit first.")
-        Z = X.copy()
+
+        Z = X.astype(float, copy=True)
+
+        # Keep NaNs as NaNs. Operations with NaN stay NaN, which is what we want.
         if self.with_mean:
             Z = Z - self.mean_
         if self.with_std:
@@ -39,52 +67,102 @@ class StandardScaler:
 
 
 class Imputer:
+    """
+    Streaming mean imputer (NaN -> running mean).
+
+    partial_fit updates running mean (ignoring NaNs).
+    transform fills NaNs using current running mean.
+    """
     def __init__(self, strategy: str = "mean"):
-        if strategy not in {"mean"}:
-            raise ValueError("Only strategy='mean' ")
+        if strategy != "mean":
+            raise ValueError("Only strategy='mean' is supported for this assignment implementation.")
         self.strategy = strategy
-        self.fill_ = None
+        self._stats = StreamingStats()
+
+        self.fill_: Optional[np.ndarray] = None
 
     def partial_fit(self, X, y=None):
         X = as_2d_array(X, "X")
-        self.fill_ = np.nanmean(X, axis=0)
+        self._stats.update_stats(X)
+        self.fill_ = self._stats.mean_.copy()
         return self
 
     def transform(self, X):
         X = as_2d_array(X, "X")
         if self.fill_ is None:
             raise ValueError("Imputer is not fitted yet. Call partial_fit first.")
-        Z = X.copy()
+
+        Z = X.astype(float, copy=True)
         mask = np.isnan(Z)
-        Z[mask] = np.take(self.fill_, np.where(mask)[1])
+        if np.any(mask):
+            # mask is 2D; mask indices for columns tell us which feature mean to use
+            cols = np.where(mask)[1]
+            Z[mask] = np.take(self.fill_, cols)
         return Z
 
 
 class OneHotEncoder:
-    def __init__(self):
-        self.categories_ = None  # list of arrays per column
+    """
+    Incremental OneHotEncoder.
+
+    We treat each feature column as categorical.
+    - partial_fit collects new categories across chunks.
+    - transform returns concatenated one-hot blocks (one block per column).
+
+    Handling NaNs:
+    - NaN is treated as "missing category" and encoded as all zeros for that column.
+      (Simple and usually acceptable.)
+    """
+    def __init__(self, dtype=float):
+        self.dtype = dtype
+        self.categories_: Optional[List[np.ndarray]] = None
 
     def partial_fit(self, X, y=None):
         X = as_2d_array(X, "X")
-        # treat columns as categorical strings/numbers; gather unique values per column
-        cats = []
+
+        if self.categories_ is None:
+            self.categories_ = [np.array([], dtype=float) for _ in range(X.shape[1])]
+
+        if len(self.categories_) != X.shape[1]:
+            raise ValueError("Number of features changed between chunks for OneHotEncoder.")
+
         for j in range(X.shape[1]):
             col = X[:, j]
-            uniq = np.unique(col[~np.isnan(col)])
-            cats.append(uniq)
-        self.categories_ = cats
+            col = col[~np.isnan(col)]
+            if col.size == 0:
+                continue
+            uniq = np.unique(col)
+
+            # Merge existing categories with new ones, keep sorted unique order
+            merged = np.unique(np.concatenate([self.categories_[j], uniq]))
+            self.categories_[j] = merged
+
         return self
 
     def transform(self, X):
         X = as_2d_array(X, "X")
         if self.categories_ is None:
             raise ValueError("OneHotEncoder is not fitted yet. Call partial_fit first.")
-        # Placeholder: minimal encoding (will be improved)
-        outs = []
+        if len(self.categories_) != X.shape[1]:
+            raise ValueError("Number of features in transform does not match fitted encoder.")
+
+        blocks = []
         for j, cats in enumerate(self.categories_):
+            n = X.shape[0]
+            k = cats.size
+            block = np.zeros((n, k), dtype=self.dtype)
+
+            if k == 0:
+                blocks.append(block)
+                continue
+
             col = X[:, j]
-            col_out = np.zeros((X.shape[0], len(cats)), dtype=float)
-            for k, v in enumerate(cats):
-                col_out[:, k] = (col == v).astype(float)
-            outs.append(col_out)
-        return np.concatenate(outs, axis=1) if outs else np.zeros((X.shape[0], 0), dtype=float)
+            # For each category value, mark equality (vectorised per category)
+            # This uses a small loop over number of categories (usually not huge).
+            for idx, v in enumerate(cats):
+                block[:, idx] = (col == v).astype(self.dtype)
+
+            # NaNs become all zeros automatically because (NaN == v) is False.
+            blocks.append(block)
+
+        return np.concatenate(blocks, axis=1) if blocks else np.zeros((X.shape[0], 0), dtype=self.dtype)
