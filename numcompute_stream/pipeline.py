@@ -1,13 +1,15 @@
 """
-- supports streaming via .partial_fit(...)
-- transformers may have: partial_fit, fit, transform
-- model may have: partial_fit, fit, predict
+pipeline.py
 
+- support partial_fit() for models and transformers
+- Support incremental transformation + prediction in chained pipeline
 """
 
 from __future__ import annotations
+
 from dataclasses import dataclass
-from typing import List, Tuple, Any
+from typing import Any, List, Tuple
+
 import numpy as np
 
 from .utils import as_2d_array, as_1d_array
@@ -15,23 +17,29 @@ from .utils import as_2d_array, as_1d_array
 
 @dataclass
 class Pipeline:
-    """
-            Pipeline([
-                ("scale", StandardScaler()),
-                ("model", EnsembleClassifier(...))
-            ])
-    """
     steps: List[Tuple[str, Any]]
 
+    def __post_init__(self):
+        if not isinstance(self.steps, list) or len(self.steps) == 0:
+            raise ValueError("Pipeline.steps must be a non-empty list of (name, obj) tuples.")
+        for step in self.steps:
+            if not (isinstance(step, tuple) and len(step) == 2):
+                raise ValueError("Each pipeline step must be a tuple: (name, obj).")
+
     def _split(self):
-        if not self.steps:
-            raise ValueError("Pipeline.steps is empty.")
+        if len(self.steps) < 1:
+            raise ValueError("Pipeline must have at least one step.")
         *transformers, (model_name, model) = self.steps
         return transformers, (model_name, model)
 
     def partial_fit(self, X, y=None):
         """
-        Streaming training: update each transformer then update the model.
+        Stream-training on a chunk.
+
+        X: (n_samples, n_features)
+        y: (n_samples,) or None
+
+        Returns self.
         """
         X = as_2d_array(X, "X")
         if y is not None:
@@ -40,36 +48,53 @@ class Pipeline:
         transformers, (_, model) = self._split()
 
         Xt = X
-        # 1) update transformers
-        for _, t in transformers:
+
+        # 1) Update + transform using transformers
+        for name, t in transformers:
+            # Update transformer
             if hasattr(t, "partial_fit"):
                 t.partial_fit(Xt, y)
             elif hasattr(t, "fit"):
-                # fallback for non-streaming transformer (still acceptable for small chunks)
                 t.fit(Xt, y)
-            if hasattr(t, "transform"):
-                Xt = t.transform(Xt)
+            else:
+                raise TypeError(
+                    f"Transformer step '{name}' must implement partial_fit() or fit()."
+                )
 
-        # 2) update model
+            # Transform
+            if not hasattr(t, "transform"):
+                raise TypeError(f"Transformer step '{name}' must implement transform().")
+            Xt = t.transform(Xt)
+
+            Xt = as_2d_array(Xt, f"Output of transformer '{name}'")
+
+        # 2) Update model
+        if y is None:
+            raise ValueError("Pipeline.partial_fit requires y for supervised classification.")
+
         if hasattr(model, "partial_fit"):
             model.partial_fit(Xt, y)
         elif hasattr(model, "fit"):
             model.fit(Xt, y)
         else:
-            raise TypeError("Final pipeline step must be a model with partial_fit() or fit().")
+            raise TypeError("Final pipeline step (model) must implement partial_fit() or fit().")
 
         return self
 
     def predict(self, X):
-        """Run transformers then model.predict(X)."""
+        """Transform X through transformers then call model.predict(X)."""
         X = as_2d_array(X, "X")
         transformers, (_, model) = self._split()
 
         Xt = X
-        for _, t in transformers:
-            if hasattr(t, "transform"):
-                Xt = t.transform(Xt)
+        for name, t in transformers:
+            if not hasattr(t, "transform"):
+                raise TypeError(f"Transformer step '{name}' must implement transform().")
+            Xt = t.transform(Xt)
+            Xt = as_2d_array(Xt, f"Output of transformer '{name}'")
 
         if not hasattr(model, "predict"):
-            raise TypeError("Final pipeline step must implement predict().")
-        return model.predict(Xt)
+            raise TypeError("Final pipeline step (model) must implement predict().")
+        y_pred = model.predict(Xt)
+        y_pred = as_1d_array(y_pred, "y_pred")
+        return y_pred
