@@ -53,3 +53,35 @@ def test_pipeline_requires_model_predict():
     pipe.partial_fit(X, y)
     with pytest.raises(TypeError):
         pipe.predict(X)
+        
+def test_pipeline_multiple_transformers():
+    X = np.array([[1.0, np.nan], [2.0, 0.0], [3.0, 1.0], [4.0, 1.0]])
+    y = np.array([0, 0, 1, 1])
+    
+    pipe = Pipeline([
+        ("imp", Imputer()),
+        ("scale", StandardScaler()),
+        ("scale2", StandardScaler()),  # chain two scalers
+        ("model", DecisionTreeClassifier()),
+    ])
+    
+    pipe.partial_fit(X[:2], y[:2])
+    pipe.partial_fit(X[2:], y[2:])
+    
+    pred = pipe.predict(X)
+    assert pred.shape == y.shape
+
+
+def test_pipeline_transform_shape_consistency():
+    X = np.array([[1.0, 2.0], [3.0, 4.0]])
+    y = np.array([0, 1])
+    
+    pipe = Pipeline([
+        ("scale", StandardScaler()),
+        ("model", DecisionTreeClassifier()),
+    ])
+    pipe.partial_fit(X, y)
+    
+    # Transform output shape should match input
+    pred = pipe.predict(X)
+    assert pred.shape == (2,)

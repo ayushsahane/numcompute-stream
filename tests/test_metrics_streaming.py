@@ -87,3 +87,29 @@ def test_streaming_auc_basic_separable():
     auc.update(y_true[2:], y_score[2:])
 
     assert auc.result() > 0.99
+    
+def test_binary_precision_recall_f1_streaming_chunks():
+    y_true_1 = np.array([1, 0, 1])
+    y_pred_1 = np.array([1, 0, 0])
+    
+    y_true_2 = np.array([0, 1, 1])
+    y_pred_2 = np.array([1, 1, 1])
+    
+    m = BinaryPrecisionRecallF1()
+    m.update(y_true_1, y_pred_1)
+    m.update(y_true_2, y_pred_2)
+    
+    p, r, f1 = m.result()
+    assert 0.0 <= p <= 1.0
+    assert 0.0 <= r <= 1.0
+
+def test_rolling_metric_window_overflow():
+    roll = RollingMetric(lambda: Accuracy(), window_size=3)
+    y_true = np.array([0, 0, 1, 1, 1, 0])
+    y_pred = np.array([0, 0, 1, 1, 0, 0])
+    
+    roll.update(y_true[:3], y_pred[:3])
+    roll.update(y_true[3:], y_pred[3:])
+    
+    # Last 3: true=[1,1,0], pred=[1,0,0] => 2 correct (positions 0,2)
+    assert np.isclose(roll.result(), 2/3)

@@ -51,3 +51,29 @@ def test_streaming_histogram_counts_sum_to_n():
     counts, edges = h.result()
     assert counts.sum() == 101
     assert edges.shape == (6,)
+    
+def test_streaming_quantile_empty_reset():
+    q = StreamingQuantile()
+    result1 = q.result(0.5)
+    assert np.isnan(result1)
+    
+    q.reset()
+    result2 = q.result(0.5)
+    assert np.isnan(result2)
+
+
+def test_streaming_histogram_bins_consistent():
+    h1 = StreamingHistogram(bins=10, range=(0.0, 1.0))
+    h2 = StreamingHistogram(bins=10, range=(0.0, 1.0))
+
+    X = np.linspace(0, 1, 100)
+    h1.update(X[:50])
+    h1.update(X[50:])
+    
+    h2.update(X)
+    
+    counts1, edges1 = h1.result()
+    counts2, edges2 = h2.result()
+    
+    assert np.allclose(counts1, counts2)
+    assert np.allclose(edges1, edges2)

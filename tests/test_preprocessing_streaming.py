@@ -69,3 +69,24 @@ def test_onehotencoder_nan_encodes_all_zeros():
     Z = enc.transform(np.array([[np.nan], [0.0]]))
     assert (Z[0] == np.array([0.0, 0.0])).all()
     assert (Z[1] == np.array([1.0, 0.0])).all()
+    
+def test_imputer_zero_variance_feature():
+    X1 = np.array([[5.0, 1.0], [5.0, 2.0]])
+    X2 = np.array([[5.0, np.nan]])
+    
+    imp = Imputer().partial_fit(X1).partial_fit(X2)
+    Z = imp.transform(np.array([[5.0, np.nan]]))
+    
+    # Feature 0 is constant (all 5), feature 1 has mean of [1,2] = 1.5
+    assert np.isclose(Z[0, 0], 5.0)
+    assert np.isclose(Z[0, 1], 1.5)
+
+
+def test_scaler_with_constant_feature():
+    X = np.array([[1.0, 5.0], [1.0, 6.0], [1.0, 7.0]])
+    sc = StandardScaler().partial_fit(X)
+    Z = sc.transform(X)
+    
+    # First feature is constant, variance = 0
+    # After scaling: (1-1)/sqrt(0+eps) = 0
+    assert np.allclose(Z[:, 0], 0.0, atol=1e-6)
