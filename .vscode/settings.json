@@ -1,0 +1,7 @@
+{
+    "python.testing.pytestArgs": [
+        "numcompute_stream"
+    ],
+    "python.testing.unittestEnabled": false,
+    "python.testing.pytestEnabled": true
+}

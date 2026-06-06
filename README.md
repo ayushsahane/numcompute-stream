@@ -58,6 +58,11 @@ source .venv/bin/activate  # or .\.venv\Scripts\activate on Windows
 pip install -U pip
 pip install numpy matplotlib pytest
 
-# For testing the assignment & running the benchmark
+# For testing the assignment
 pytest / pytest -v
+
+# For testing the assignment with coverage
+pytest --cov=numcompute_stream --cov-branch --cov-report=term-missing --cov-report=html
+
+# For running the benchmark
 python -m benchmark.benchmark_vectorised_vs_loop 
