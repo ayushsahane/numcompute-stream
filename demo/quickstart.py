@@ -1,7 +1,5 @@
 """
-quickstart.py
-
-Demonstrates the full streaming ML pipeline:
+Shows the full streaming ML pipeline:
 1. Load data (simulate with random)
 2. Split into chunks
 3. Train incrementally with partial_fit
